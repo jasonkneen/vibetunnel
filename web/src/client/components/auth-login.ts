@@ -179,7 +179,7 @@ export class AuthLogin extends LitElement {
                 style="filter: drop-shadow(0 0 15px rgb(var(--color-primary) / 0.4));"
               ></terminal-icon>
               <h2 class="auth-title text-2xl sm:text-3xl mt-1 sm:mt-2">VibeTunnel</h2>
-              <p class="auth-subtitle text-xs sm:text-sm">Please authenticate to continue</p>
+              <p class="auth-subtitle text-xs sm:text-sm">Please introduce password to continue</p>
             </div>
           </div>
 
@@ -332,7 +332,7 @@ export class AuthLogin extends LitElement {
                         ${
                           this.currentUserId
                             ? `Welcome back, ${this.currentUserId}`
-                            : 'Please authenticate to continue'
+                            : 'Please introduce password to continue'
                         }
                       </p>
                       <p class="text-text-muted text-xs mt-1 sm:mt-2">

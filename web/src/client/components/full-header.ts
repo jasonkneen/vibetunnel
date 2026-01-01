@@ -18,27 +18,27 @@ export class FullHeader extends HeaderBase {
     return html`
       <div
         class="app-header bg-bg-secondary border-b border-border p-3"
-        style="padding-top: max(0.75rem, calc(0.75rem + env(safe-area-inset-top)));"
+        style="padding-top: max(0.75rem, calc(0.75rem + env(safe-area-inset-top))); padding-right: max(0.75rem, calc(0.75rem + env(safe-area-inset-right))); padding-left: max(0.75rem, calc(0.75rem + env(safe-area-inset-left)));"
       >
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between gap-2 overflow-hidden">
           <button
-            class="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer group"
+            class="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer group min-w-0 flex-shrink"
             title="Go to home"
             @click=${this.handleHomeClick}
           >
-            <terminal-icon size="24"></terminal-icon>
-            <div class="flex items-baseline gap-2">
-              <h1 class="text-sm sm:text-xl font-bold text-primary font-mono group-hover:underline">
+            <terminal-icon size="24" class="flex-shrink-0"></terminal-icon>
+            <div class="flex items-baseline gap-2 min-w-0">
+              <h1 class="text-sm sm:text-xl font-bold text-primary font-mono group-hover:underline truncate">
                 <span class="hidden sm:inline">VibeTunnel</span>
                 <span class="sm:hidden">VT</span>
               </h1>
-              <p class="text-text-muted text-xs font-mono">
+              <p class="text-text-muted text-xs font-mono flex-shrink-0">
                 (${runningSessions.length})
               </p>
             </div>
           </button>
 
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-shrink-0">
             <notification-status
               @open-settings=${() => this.dispatchEvent(new CustomEvent('open-settings'))}
             ></notification-status>

@@ -107,6 +107,11 @@ export class DesktopIMEInput {
     this.documentClickHandler = (e: Event) => {
       const target = e.target as HTMLElement;
       if (this.options.container.contains(target) || target === this.options.container) {
+        // Don't steal focus if user has text selected - this would clear their selection
+        const selection = window.getSelection();
+        if (selection && selection.toString().length > 0) {
+          return;
+        }
         this.focus();
       }
     };

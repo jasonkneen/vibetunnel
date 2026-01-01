@@ -92,6 +92,11 @@ export class TerminalQuickKeys extends LitElement {
   // Chord system state
   private activeModifiers = new Set<string>();
 
+  // Touch tracking for scroll detection
+  private touchStartY = 0;
+  private touchStartX = 0;
+  private isTouchMoving = false;
+
   connectedCallback() {
     super.connectedCallback();
     // Check orientation on mount
@@ -104,6 +109,11 @@ export class TerminalQuickKeys extends LitElement {
 
     window.addEventListener('resize', this.orientationHandler);
     window.addEventListener('orientationchange', this.orientationHandler);
+
+    // Add passive touch listeners for smooth scrolling
+    // We attach to the component host itself since it captures events from shadow DOM
+    this.addEventListener('touchstart', this.handleDelegatedTouchStart, { passive: true });
+    this.addEventListener('touchmove', this.handleDelegatedTouchMove, { passive: true });
   }
 
   private checkOrientation() {
@@ -125,6 +135,63 @@ export class TerminalQuickKeys extends LitElement {
     } else {
       return 'quick-key-btn-medium'; // 13px
     }
+  }
+
+  // Delegated touch start handler (passive)
+  private handleDelegatedTouchStart = (e: TouchEvent) => {
+    const target = e
+      .composedPath()
+      .find((el) => el instanceof HTMLElement && el.classList.contains('quick-key-btn')) as
+      | HTMLElement
+      | undefined;
+
+    if (!target) return;
+
+    const touch = e.touches[0];
+    this.touchStartY = touch.clientY;
+    this.touchStartX = touch.clientX;
+    this.isTouchMoving = false;
+
+    // Handle key repeat for arrow keys
+    const isArrow = target.classList.contains('arrow-key');
+    if (isArrow) {
+      const key = target.getAttribute('data-key');
+      const modifier = target.hasAttribute('data-modifier');
+      if (key) {
+        this.startKeyRepeat(key, modifier, false);
+      }
+    }
+  };
+
+  // Delegated touch move handler (passive)
+  private handleDelegatedTouchMove = (e: TouchEvent) => {
+    const touch = e.touches[0];
+    const deltaY = Math.abs(touch.clientY - this.touchStartY);
+    const deltaX = Math.abs(touch.clientX - this.touchStartX);
+
+    // Reduced threshold from 10px to 5px for better scroll detection
+    if (deltaY > 5 || deltaX > 5) {
+      this.isTouchMoving = true;
+
+      // Cancel key repeat if scrolling
+      if (this.keyRepeatInterval || this.keyRepeatTimeout) {
+        this.stopKeyRepeat();
+      }
+    }
+  };
+
+  // Keep handleTouchEnd for non-passive usage in @touchend
+  private handleTouchEnd(e: TouchEvent, callback: () => void) {
+    if (!this.isTouchMoving) {
+      // Only preventDefault for actual taps
+      if (e.cancelable) {
+        e.preventDefault();
+      }
+      e.stopPropagation();
+      callback();
+    }
+    // Don't preventDefault if user was scrolling - let iOS handle it naturally
+    this.isTouchMoving = false;
   }
 
   updated(changedProperties: PropertyValues) {
@@ -264,30 +331,36 @@ export class TerminalQuickKeys extends LitElement {
       window.removeEventListener('orientationchange', this.orientationHandler);
       this.orientationHandler = null;
     }
+
+    // Remove passive touch listeners
+    this.removeEventListener('touchstart', this.handleDelegatedTouchStart);
+    this.removeEventListener('touchmove', this.handleDelegatedTouchMove);
   }
 
   private renderStyles() {
     return html`
       <style>
         
-        /* Quick keys container - positioned above keyboard */
+        /* Quick keys container - fixed above keyboard */
         .terminal-quick-keys-container {
-          position: fixed;
-          left: 0;
-          right: 0;
-          bottom: 0;
+          /* position, bottom, left, right are set inline with !important */
           z-index: ${Z_INDEX.TERMINAL_QUICK_KEYS};
           background-color: rgb(var(--color-bg-secondary) / 0.98);
           backdrop-filter: blur(20px);
           -webkit-backdrop-filter: blur(20px);
-          width: 100vw;
-          max-width: 100vw;
-          /* No safe areas needed when above keyboard */
+          width: 100%;
+          max-width: 100%;
           padding-left: 0;
           padding-right: 0;
           margin-left: 0;
           margin-right: 0;
           box-sizing: border-box;
+          /* Prevent overscroll and bouncing */
+          overscroll-behavior: none;
+          -webkit-overflow-scrolling: auto;
+          /* Allow touch events to pass through for scrolling terminal content */
+          pointer-events: none;
+          /* NO transform, will-change, or contain properties that break position:fixed */
         }
         
         /* The actual bar with buttons */
@@ -298,15 +371,17 @@ export class TerminalQuickKeys extends LitElement {
           width: 100%;
           box-sizing: border-box;
           overflow: hidden;
+          /* Re-enable pointer events for the button bar */
+          pointer-events: auto;
         }
-        
+
         /* Button rows - ensure full width */
         .quick-keys-bar > div {
           width: 100%;
           padding-left: 0.125rem;
           padding-right: 0.125rem;
         }
-        
+
         /* Quick key buttons */
         .quick-key-btn {
           outline: none !important;
@@ -315,6 +390,8 @@ export class TerminalQuickKeys extends LitElement {
           -webkit-user-select: none;
           flex: 1 1 0;
           min-width: 0;
+          /* Ensure buttons are interactive */
+          pointer-events: auto;
         }
         
         /* Modifier key styling */
@@ -446,10 +523,9 @@ export class TerminalQuickKeys extends LitElement {
 
     // Use the same layout for all mobile devices (phones and tablets)
     return html`
-      <div 
+      <div
         class="terminal-quick-keys-container"
-        @mousedown=${(e: Event) => e.preventDefault()}
-        @touchstart=${(e: Event) => e.preventDefault()}
+        style="position: fixed !important; bottom: var(--keyboard-offset, 0px) !important; left: 0 !important; right: 0 !important;"
       >
         <div class="quick-keys-bar">
           <!-- Row 1 -->
@@ -460,27 +536,23 @@ export class TerminalQuickKeys extends LitElement {
                   type="button"
                   tabindex="-1"
                   class="quick-key-btn ${this.getButtonFontClass(label)} min-w-0 ${this.getButtonSizeClass(label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap ${modifier ? 'modifier-key' : ''} ${arrow ? 'arrow-key' : ''} ${toggle ? 'toggle-key' : ''} ${toggle && ((key === 'CtrlExpand' && this.showCtrlKeys) || (key === 'F' && this.showFunctionKeys)) ? 'active' : ''} ${modifier && key === 'Option' && this.activeModifiers.has('Option') ? 'active' : ''}"
+                  data-key="${key}"
+                  ?data-modifier="${modifier}"
+                  ?data-arrow="${arrow}"
+                  ?data-toggle="${toggle}"
                   @mousedown=${(e: Event) => {
                     e.preventDefault();
                     e.stopPropagation();
                   }}
-                  @touchstart=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // Start key repeat for arrow keys
-                    if (arrow) {
-                      this.startKeyRepeat(key, modifier || false, false);
-                    }
-                  }}
-                  @touchend=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // Stop key repeat
-                    if (arrow) {
-                      this.stopKeyRepeat();
-                    } else {
-                      this.handleKeyPress(key, modifier, false, toggle, e);
-                    }
+                  @touchend=${(e: TouchEvent) => {
+                    this.handleTouchEnd(e, () => {
+                      // Stop key repeat
+                      if (arrow) {
+                        this.stopKeyRepeat();
+                      } else {
+                        this.handleKeyPress(key, modifier, false, toggle, e);
+                      }
+                    });
                   }}
                   @touchcancel=${(_e: Event) => {
                     // Also stop on touch cancel
@@ -492,8 +564,7 @@ export class TerminalQuickKeys extends LitElement {
                     if (e.detail !== 0 && !arrow) {
                       this.handleKeyPress(key, modifier, false, toggle, e);
                     }
-                  }}
-                >
+                  }}>
                   ${label}
                 </button>
               `
@@ -512,25 +583,23 @@ export class TerminalQuickKeys extends LitElement {
                       type="button"
                       tabindex="-1"
                       class="ctrl-shortcut-btn ${this.getButtonFontClass(label)} min-w-0 ${this.getButtonSizeClass(label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap ${combo ? 'combo-key' : ''} ${special ? 'special-key' : ''}"
+                      data-key="${key}"
+                      ?data-combo="${combo}"
+                      ?data-special="${special}"
                       @mousedown=${(e: Event) => {
                         e.preventDefault();
                         e.stopPropagation();
                       }}
-                      @touchstart=${(e: Event) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                      @touchend=${(e: Event) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        this.handleKeyPress(key, false, special, false, e);
+                      @touchend=${(e: TouchEvent) => {
+                        this.handleTouchEnd(e, () => {
+                          this.handleKeyPress(key, false, special, false, e);
+                        });
                       }}
                       @click=${(e: MouseEvent) => {
                         if (e.detail !== 0) {
                           this.handleKeyPress(key, false, special, false, e);
                         }
-                      }}
-                    >
+                      }}>
                       ${label}
                     </button>
                   `
@@ -540,18 +609,16 @@ export class TerminalQuickKeys extends LitElement {
                   type="button"
                   tabindex="-1"
                   class="quick-key-btn ${this.getButtonFontClass(DONE_BUTTON.label)} min-w-0 ${this.getButtonSizeClass(DONE_BUTTON.label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap special-key"
+                  data-key="${DONE_BUTTON.key}"
+                  ?data-special="${DONE_BUTTON.special}"
                   @mousedown=${(e: Event) => {
                     e.preventDefault();
                     e.stopPropagation();
                   }}
-                  @touchstart=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  @touchend=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.handleKeyPress(DONE_BUTTON.key, false, DONE_BUTTON.special, false, e);
+                  @touchend=${(e: TouchEvent) => {
+                    this.handleTouchEnd(e, () => {
+                      this.handleKeyPress(DONE_BUTTON.key, false, DONE_BUTTON.special, false, e);
+                    });
                   }}
                   @click=${(e: MouseEvent) => {
                     if (e.detail !== 0) {
@@ -573,11 +640,8 @@ export class TerminalQuickKeys extends LitElement {
                       type="button"
                       tabindex="-1"
                       class="func-key-btn ${this.getButtonFontClass(label)} min-w-0 ${this.getButtonSizeClass(label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap"
+                      data-key="${key}"
                       @mousedown=${(e: Event) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                      @touchstart=${(e: Event) => {
                         e.preventDefault();
                         e.stopPropagation();
                       }}
@@ -590,8 +654,7 @@ export class TerminalQuickKeys extends LitElement {
                         if (e.detail !== 0) {
                           this.handleKeyPress(key, false, false, false, e);
                         }
-                      }}
-                    >
+                      }}     >
                       ${label}
                     </button>
                   `
@@ -601,18 +664,16 @@ export class TerminalQuickKeys extends LitElement {
                   type="button"
                   tabindex="-1"
                   class="quick-key-btn ${this.getButtonFontClass(DONE_BUTTON.label)} min-w-0 ${this.getButtonSizeClass(DONE_BUTTON.label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap special-key"
+                  data-key="${DONE_BUTTON.key}"
+                  ?data-special="${DONE_BUTTON.special}"
                   @mousedown=${(e: Event) => {
                     e.preventDefault();
                     e.stopPropagation();
                   }}
-                  @touchstart=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  @touchend=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.handleKeyPress(DONE_BUTTON.key, false, DONE_BUTTON.special, false, e);
+                  @touchend=${(e: TouchEvent) => {
+                    this.handleTouchEnd(e, () => {
+                      this.handleKeyPress(DONE_BUTTON.key, false, DONE_BUTTON.special, false, e);
+                    });
                   }}
                   @click=${(e: MouseEvent) => {
                     if (e.detail !== 0) {
@@ -633,29 +694,28 @@ export class TerminalQuickKeys extends LitElement {
                       type="button"
                       tabindex="-1"
                       class="quick-key-btn ${this.getButtonFontClass(label)} min-w-0 ${this.getButtonSizeClass(label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap ${modifier ? 'modifier-key' : ''} ${combo ? 'combo-key' : ''} ${toggle ? 'toggle-key' : ''} ${toggle && this.showFunctionKeys ? 'active' : ''}"
+                      data-key="${key}"
+                      ?data-modifier="${modifier}"
+                      ?data-combo="${combo}"
+                      ?data-toggle="${toggle}"
                       @mousedown=${(e: Event) => {
                         e.preventDefault();
                         e.stopPropagation();
                       }}
-                      @touchstart=${(e: Event) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                      @touchend=${(e: Event) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (key === 'Paste') {
-                          this.handlePasteImmediate(e);
-                        } else {
-                          this.handleKeyPress(key, modifier || combo, false, false, e);
-                        }
+                      @touchend=${(e: TouchEvent) => {
+                        this.handleTouchEnd(e, () => {
+                          if (key === 'Paste') {
+                            this.handlePasteImmediate(e);
+                          } else {
+                            this.handleKeyPress(key, modifier || combo, false, false, e);
+                          }
+                        });
                       }}
                       @click=${(e: MouseEvent) => {
                         if (e.detail !== 0) {
                           this.handleKeyPress(key, modifier || combo, false, false, e);
                         }
-                      }}
-                    >
+                      }}     >
                       ${label}
                     </button>
                   `
@@ -665,18 +725,16 @@ export class TerminalQuickKeys extends LitElement {
                   type="button"
                   tabindex="-1"
                   class="quick-key-btn ${this.getButtonFontClass(DONE_BUTTON.label)} min-w-0 ${this.getButtonSizeClass(DONE_BUTTON.label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap special-key"
+                  data-key="${DONE_BUTTON.key}"
+                  ?data-special="${DONE_BUTTON.special}"
                   @mousedown=${(e: Event) => {
                     e.preventDefault();
                     e.stopPropagation();
                   }}
-                  @touchstart=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  @touchend=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.handleKeyPress(DONE_BUTTON.key, false, DONE_BUTTON.special, false, e);
+                  @touchend=${(e: TouchEvent) => {
+                    this.handleTouchEnd(e, () => {
+                      this.handleKeyPress(DONE_BUTTON.key, false, DONE_BUTTON.special, false, e);
+                    });
                   }}
                   @click=${(e: MouseEvent) => {
                     if (e.detail !== 0) {
@@ -689,7 +747,7 @@ export class TerminalQuickKeys extends LitElement {
               </div>
             `
           }
-          
+
           <!-- Row 3 - Additional special characters (always visible) -->
           <div class="flex gap-0.5 ">
             ${TERMINAL_QUICK_KEYS.filter((k) => k.row === 3).map(
@@ -698,25 +756,23 @@ export class TerminalQuickKeys extends LitElement {
                   type="button"
                   tabindex="-1"
                   class="quick-key-btn ${this.getButtonFontClass(label)} min-w-0 ${this.getButtonSizeClass(label)} bg-bg-tertiary text-primary font-mono rounded border border-border hover:bg-surface hover:border-primary transition-all whitespace-nowrap ${modifier ? 'modifier-key' : ''} ${combo ? 'combo-key' : ''} ${modifier && key === 'Option' && this.activeModifiers.has('Option') ? 'active' : ''}"
+                  data-key="${key}"
+                  ?data-modifier="${modifier}"
+                  ?data-combo="${combo}"
                   @mousedown=${(e: Event) => {
                     e.preventDefault();
                     e.stopPropagation();
                   }}
-                  @touchstart=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  @touchend=${(e: Event) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.handleKeyPress(key, modifier || combo, false, false, e);
+                  @touchend=${(e: TouchEvent) => {
+                    this.handleTouchEnd(e, () => {
+                      this.handleKeyPress(key, modifier || combo, false, false, e);
+                    });
                   }}
                   @click=${(e: MouseEvent) => {
                     if (e.detail !== 0) {
                       this.handleKeyPress(key, modifier || combo, false, false, e);
                     }
-                  }}
-                >
+                  }}>
                   ${label}
                 </button>
               `

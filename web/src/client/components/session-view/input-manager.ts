@@ -33,6 +33,11 @@ export class InputManager {
   private imeInput: DesktopIMEInput | null = null;
   private globalCompositionListener: ((e: CompositionEvent) => void) | null = null;
 
+  // Track pending input (what user has typed before pressing Enter)
+  // This is used for syncing between terminal and chat view
+  private _pendingInput = '';
+  private pendingInputListeners: Set<(input: string) => void> = new Set();
+
   setSession(session: Session | null): void {
     // Clean up IME input when session is null
     if (!session && this.imeInput) {
@@ -59,6 +64,109 @@ export class InputManager {
 
   setCallbacks(callbacks: InputManagerCallbacks): void {
     this.callbacks = callbacks;
+  }
+
+  // ===== Pending Input Management =====
+  // Tracks what user has typed before pressing Enter for terminal/chat sync
+
+  /**
+   * Get the current pending input (what user has typed before pressing Enter)
+   */
+  getPendingInput(): string {
+    return this._pendingInput;
+  }
+
+  /**
+   * Set the pending input directly (used when typing in chat mode)
+   */
+  setPendingInput(input: string): void {
+    if (this._pendingInput !== input) {
+      this._pendingInput = input;
+      this.notifyPendingInputListeners();
+    }
+  }
+
+  /**
+   * Subscribe to pending input changes
+   */
+  onPendingInputChange(listener: (input: string) => void): () => void {
+    this.pendingInputListeners.add(listener);
+    return () => {
+      this.pendingInputListeners.delete(listener);
+    };
+  }
+
+  private notifyPendingInputListeners(): void {
+    for (const listener of this.pendingInputListeners) {
+      listener(this._pendingInput);
+    }
+  }
+
+  /**
+   * Update pending input based on a character or key being sent
+   * Call this when input is sent to the terminal to track what's in the current line
+   */
+  private updatePendingInput(input: string | { key?: string; text?: string }): void {
+    if (typeof input === 'string') {
+      this.processInputForPendingBuffer(input);
+    } else if (input.text) {
+      this.processInputForPendingBuffer(input.text);
+    } else if (input.key) {
+      this.processKeyForPendingBuffer(input.key);
+    }
+  }
+
+  private processInputForPendingBuffer(text: string): void {
+    // Handle control characters and special sequences
+    for (const char of text) {
+      const code = char.charCodeAt(0);
+
+      if (char === '\r' || char === '\n' || code === 13 || code === 10) {
+        // Enter - clear pending input
+        this._pendingInput = '';
+        this.notifyPendingInputListeners();
+      } else if (char === '\x7f' || char === '\b' || code === 127 || code === 8) {
+        // Backspace - remove last character
+        if (this._pendingInput.length > 0) {
+          this._pendingInput = this._pendingInput.slice(0, -1);
+          this.notifyPendingInputListeners();
+        }
+      } else if (char === '\x15') {
+        // Ctrl+U - clear line
+        this._pendingInput = '';
+        this.notifyPendingInputListeners();
+      } else if (char === '\x17') {
+        // Ctrl+W - delete word backward
+        this._pendingInput = this._pendingInput.replace(/\S*\s*$/, '');
+        this.notifyPendingInputListeners();
+      } else if (code >= 32 && code < 127) {
+        // Printable ASCII characters
+        this._pendingInput += char;
+        this.notifyPendingInputListeners();
+      }
+      // Ignore other control characters (arrows, escape sequences, etc.)
+    }
+  }
+
+  private processKeyForPendingBuffer(key: string): void {
+    switch (key) {
+      case 'enter':
+      case 'ctrl_enter':
+      case 'shift_enter':
+        // Clear pending input on Enter
+        this._pendingInput = '';
+        this.notifyPendingInputListeners();
+        break;
+      case 'backspace':
+        // Remove last character
+        if (this._pendingInput.length > 0) {
+          this._pendingInput = this._pendingInput.slice(0, -1);
+          this.notifyPendingInputListeners();
+        }
+        break;
+      // Arrow keys, tab, escape don't modify the pending buffer content
+      // (they may move cursor or trigger completion, but the "text" stays the same)
+    }
   }
 
   /**
@@ -375,6 +483,9 @@ export class InputManager {
   ): Promise<void> {
     if (!this.session) return;
 
+    // Track pending input for terminal/chat sync
+    this.updatePendingInput(input);
+
     try {
       // Prefer v3 socket (single transport). Keep HTTP fallback for robustness.
       const sentViaSocket =
@@ -569,6 +680,14 @@ export class InputManager {
       this.globalCompositionListener = null;
     }
 
+    // Disconnect WebSocket if feature was enabled
+    if (this.useWebSocketInput) {
+      websocketInputClient.disconnect();
+    }
+
+    // Clear pending input state
+    this._pendingInput = '';
+    this.pendingInputListeners.clear();
     // Clear references to prevent memory leaks
     this.session = null;
     this.callbacks = null;

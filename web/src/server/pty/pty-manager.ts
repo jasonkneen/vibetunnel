@@ -1494,6 +1494,7 @@ export class PtyManager extends EventEmitter {
         }
 
         if (diskSession.pid && ProcessUtils.isProcessRunning(diskSession.pid)) {
+          let terminated = false;
           logger.log(
             chalk.yellow(`Killing external session ${sessionId} (PID: ${diskSession.pid})`)
           );
@@ -1505,37 +1506,51 @@ export class PtyManager extends EventEmitter {
             // that might share the same process group (e.g., multiple forwarder instances)
 
             await new Promise((resolve) => setTimeout(resolve, 100));
-            return;
-          }
+            terminated = !ProcessUtils.isProcessRunning(diskSession.pid);
+          } else {
+            // Send SIGTERM first
+            process.kill(diskSession.pid, 'SIGTERM');
 
-          // Send SIGTERM first
-          process.kill(diskSession.pid, 'SIGTERM');
+            // Note: We no longer kill the process group to avoid affecting other sessions
+            // that might share the same process group (e.g., multiple forwarder instances)
 
-          // Note: We no longer kill the process group to avoid affecting other sessions
-          // that might share the same process group (e.g., multiple forwarder instances)
+            // Wait up to 3 seconds for graceful termination
+            const maxWaitTime = 3000;
+            const checkInterval = 500;
+            const maxChecks = maxWaitTime / checkInterval;
 
-          // Wait up to 3 seconds for graceful termination
-          const maxWaitTime = 3000;
-          const checkInterval = 500;
-          const maxChecks = maxWaitTime / checkInterval;
+            for (let i = 0; i < maxChecks; i++) {
+              await new Promise((resolve) => setTimeout(resolve, checkInterval));
 
-          for (let i = 0; i < maxChecks; i++) {
-            await new Promise((resolve) => setTimeout(resolve, checkInterval));
+              if (!ProcessUtils.isProcessRunning(diskSession.pid)) {
+                logger.debug(chalk.green(`External session ${sessionId} terminated gracefully`));
+                terminated = true;
+                break;
+              }
+            }
 
-            if (!ProcessUtils.isProcessRunning(diskSession.pid)) {
-              logger.debug(chalk.green(`External session ${sessionId} terminated gracefully`));
-              return;
+            // Process didn't terminate gracefully, force kill
+            if (!terminated) {
+              logger.debug(chalk.yellow(`External session ${sessionId} requires SIGKILL`));
+              process.kill(diskSession.pid, 'SIGKILL');
+
+              // Note: We no longer kill the process group to avoid affecting other sessions
+              // that might share the same process group (e.g., multiple forwarder instances)
+
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              terminated = !ProcessUtils.isProcessRunning(diskSession.pid);
             }
           }
 
-          // Process didn't terminate gracefully, force kill
-          logger.debug(chalk.yellow(`External session ${sessionId} requires SIGKILL`));
-          process.kill(diskSession.pid, 'SIGKILL');
-
-          // Note: We no longer kill the process group to avoid affecting other sessions
-          // that might share the same process group (e.g., multiple forwarder instances)
-
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          if (terminated && diskSession.pid && !ProcessUtils.isProcessRunning(diskSession.pid)) {
+            this.sessionManager.updateSessionStatus(sessionId, 'exited', undefined, 0);
+            this.emit(
+              'sessionExited',
+              sessionId,
+              diskSession.name || diskSession.command.join(' '),
+              0
+            );
+          }
         }
       }
     } catch (error) {

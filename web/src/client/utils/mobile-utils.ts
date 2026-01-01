@@ -12,7 +12,8 @@
 export function detectMobile(): boolean {
   return (
     /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
-    (!!navigator.maxTouchPoints && navigator.maxTouchPoints > 1)
+    (!!navigator.maxTouchPoints && navigator.maxTouchPoints > 1) ||
+    window.matchMedia?.('(pointer: coarse)').matches
   );
 }
 
@@ -22,7 +23,10 @@ export function detectMobile(): boolean {
  * @returns true if the device is running iOS
  */
 export function isIOS(): boolean {
-  return /iPad|iPhone|iPod/.test(navigator.userAgent);
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
 }
 
 /**

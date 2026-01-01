@@ -174,3 +174,4 @@ mac/build-test/
 /info
 *.crt
 *.key
+.tmp/

@@ -101,20 +101,21 @@ export class OverlaysContainer extends LitElement {
         `;
       })()}
       
-      <!-- Floating Keyboard Button (for mobile) -->
+      <!-- Floating Keyboard Button (for direct keyboard mode on mobile, hidden in chat mode) -->
+      <!-- Always visible when in direct keyboard mode to allow dismissing the keyboard -->
       ${
-        this.uiState.isMobile && !this.uiState.showQuickKeys
+        this.uiState.isMobile && this.uiState.useDirectKeyboard && !this.uiState.chatMode
           ? html`
             <div
-              class="keyboard-button mobile-keyboard-button"
+              class="keyboard-button mobile-keyboard-button ${this.uiState.showQuickKeys ? 'quick-keys-visible' : ''}"
               @pointerdown=${(e: PointerEvent) => {
                 e.preventDefault();
                 e.stopPropagation();
                 this.callbacks?.onKeyboardButtonClick();
               }}
-              title="Tap to show keyboard"
+              title="${this.uiState.showQuickKeys ? 'Hide keyboard' : 'Show keyboard'}"
               role="button"
-              aria-label="Show mobile keyboard"
+              aria-label="Toggle mobile keyboard"
             >
               <div class="flex flex-col items-center gap-1">
                 <span class="text-2xl">⌨</span>

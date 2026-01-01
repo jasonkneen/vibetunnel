@@ -39,6 +39,8 @@ export class LifecycleEventManager extends ManagerEventEmitter {
   private keyboardListenerAdded = false;
   private touchListenersAdded = false;
   private visualViewportHandler: (() => void) | null = null;
+  private viewportTrackingHandler: (() => void) | null = null;
+  private viewportTrackingTarget: 'visual' | 'window' | null = null;
   private clickHandler: (() => void) | null = null;
 
   // Touch detection results cache
@@ -52,6 +54,50 @@ export class LifecycleEventManager extends ManagerEventEmitter {
   constructor() {
     super();
     logger.log('LifecycleEventManager initialized');
+    // Initialize visualViewport height tracking for iOS Safari
+    this.setupVisualViewportTracking();
+  }
+
+  /**
+   * Setup visualViewport tracking to fix iOS Safari issues with fixed elements and keyboard
+   * Based on: https://stackoverflow.com/questions/56351216/ios-safari-unwanted-scroll-when-keyboard-is-opened
+   * And: https://mathix.dev/blog/fix-html-elements-on-top-of-the-ios-keyboard-using-html-css-js
+   */
+  private setupVisualViewportTracking(): void {
+    const updateViewport = () => {
+      const vv = window.visualViewport;
+      const ih = window.innerHeight;
+
+      // Update app height
+      const height = vv ? `${vv.height}px` : `${ih}px`;
+      document.documentElement.style.setProperty('--app-height', height);
+
+      // Calculate keyboard offset for fixed elements
+      // When keyboard is open: innerHeight - visualViewport.height - offsetTop gives keyboard height
+      const keyboardOffset = vv ? Math.max(0, ih - vv.height - vv.offsetTop) : 0;
+
+      // Update CSS custom property for quick keys positioning
+      document.documentElement.style.setProperty('--keyboard-offset', `${keyboardOffset}px`);
+
+      logger.debug(`Viewport updated - height: ${height}, keyboard offset: ${keyboardOffset}px`);
+    };
+
+    // Set initial values
+    updateViewport();
+    this.viewportTrackingHandler = updateViewport;
+
+    // Listen to visualViewport changes (iOS Safari)
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', updateViewport);
+      window.visualViewport.addEventListener('scroll', updateViewport);
+      this.viewportTrackingTarget = 'visual';
+      logger.log('VisualViewport tracking enabled for iOS Safari');
+    } else {
+      // Fallback for non-supporting browsers
+      window.addEventListener('resize', updateViewport);
+      this.viewportTrackingTarget = 'window';
+      logger.log('Using fallback window resize for viewport tracking');
+    }
   }
 
   setSessionViewElement(element: HTMLElement): void {
@@ -99,6 +145,16 @@ export class LifecycleEventManager extends ManagerEventEmitter {
    * Determine if touch keyboard should be enabled based on capabilities and preferences
    */
   private shouldEnableTouchKeyboard(): boolean {
+    // FIRST: Check if this is an iPad - always enable for iPads
+    const userAgent = navigator.userAgent;
+    const isIPadUserAgent =
+      /iPad/.test(userAgent) || (/Macintosh/.test(userAgent) && navigator.maxTouchPoints > 1);
+
+    if (isIPadUserAgent) {
+      logger.log('iPad detected via user agent - enabling touch keyboard');
+      return true;
+    }
+
     // Get user preference from localStorage
     const preference = localStorage.getItem('touchKeyboardPreference') || 'auto';
 
@@ -125,7 +181,19 @@ export class LifecycleEventManager extends ManagerEventEmitter {
     const isSmallScreen = screenSize < 1024;
 
     // Enable for touch-first OR hybrid with small screen
-    return isTouchFirst || (isHybrid && isSmallScreen);
+    const result = isTouchFirst || (isHybrid && isSmallScreen);
+
+    logger.log('shouldEnableTouchKeyboard:', {
+      result,
+      isTouchFirst,
+      isHybrid,
+      isSmallScreen,
+      isIPadUserAgent,
+      userAgent,
+      capabilities,
+    });
+
+    return result;
   }
 
   /**
@@ -293,7 +361,12 @@ export class LifecycleEventManager extends ManagerEventEmitter {
     // Store click handler reference for proper cleanup
     this.clickHandler = () => {
       if (!this.callbacks?.getDisableFocusManagement()) {
-        this.callbacks?.focus();
+        // Don't steal focus if user has text selected - this would clear their selection
+        const selection = document.getSelection();
+        const hasSelection = selection && selection.toString().length > 0;
+        if (!hasSelection) {
+          this.callbacks?.focus();
+        }
       }
     };
     this.callbacks.addEventListener('click', this.clickHandler);
@@ -362,10 +435,13 @@ export class LifecycleEventManager extends ManagerEventEmitter {
         // Set CSS custom property for keyboard height
         document.documentElement.style.setProperty('--keyboard-height', `${keyboardHeight}px`);
 
-        // Add data attribute to body for CSS targeting
+        // Add data attribute to html and body for CSS targeting
+        // Height is handled by visualViewport tracking in setupVisualViewportTracking()
         if (keyboardHeight > KEYBOARD_VISIBLE_THRESHOLD) {
+          document.documentElement.setAttribute('data-keyboard-visible', 'true');
           document.body.setAttribute('data-keyboard-visible', 'true');
         } else {
+          document.documentElement.setAttribute('data-keyboard-visible', 'false');
           document.body.setAttribute('data-keyboard-visible', 'false');
         }
 
@@ -438,8 +514,10 @@ export class LifecycleEventManager extends ManagerEventEmitter {
         previousKeyboardHeight = keyboardHeight;
       };
 
+      // Only listen to resize, NOT scroll
+      // Scroll events cause false positives for keyboard dismissal detection
+      // (iOS Safari changes viewport height when scrolling with UI hide/show)
       window.visualViewport.addEventListener('resize', this.visualViewportHandler);
-      window.visualViewport.addEventListener('scroll', this.visualViewportHandler);
     }
   }
 
@@ -518,6 +596,17 @@ export class LifecycleEventManager extends ManagerEventEmitter {
       this.visualViewportHandler = null;
     }
 
+    if (this.viewportTrackingHandler) {
+      if (this.viewportTrackingTarget === 'visual' && window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', this.viewportTrackingHandler);
+        window.visualViewport.removeEventListener('scroll', this.viewportTrackingHandler);
+      } else if (this.viewportTrackingTarget === 'window') {
+        window.removeEventListener('resize', this.viewportTrackingHandler);
+      }
+      this.viewportTrackingHandler = null;
+      this.viewportTrackingTarget = null;
+    }
+
     // Remove window resize listener
     window.removeEventListener('resize', this.handleWindowResize);
 
@@ -553,6 +642,17 @@ export class LifecycleEventManager extends ManagerEventEmitter {
       window.visualViewport.removeEventListener('resize', this.visualViewportHandler);
       window.visualViewport.removeEventListener('scroll', this.visualViewportHandler);
       this.visualViewportHandler = null;
+    }
+
+    if (this.viewportTrackingHandler) {
+      if (this.viewportTrackingTarget === 'visual' && window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', this.viewportTrackingHandler);
+        window.visualViewport.removeEventListener('scroll', this.viewportTrackingHandler);
+      } else if (this.viewportTrackingTarget === 'window') {
+        window.removeEventListener('resize', this.viewportTrackingHandler);
+      }
+      this.viewportTrackingHandler = null;
+      this.viewportTrackingTarget = null;
     }
 
     // Clean up click handler reference

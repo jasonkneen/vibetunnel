@@ -467,6 +467,8 @@ export class Terminal extends LitElement {
 
   private handleClick = () => {
     if (this.disableClick) return;
+    const selection = document.getSelection();
+    if (selection && selection.toString().length > 0) return;
     this.focus();
     this.pasteInput?.focus();
     this.pasteInput?.select();
@@ -488,6 +490,67 @@ export class Terminal extends LitElement {
     this.dispatchEvent(new CustomEvent('terminal-paste', { detail: { text }, bubbles: true }));
   };
 
+  /**
+   * Get the current input line (text the user has typed on the current line).
+   * Used to sync chat mode input with the terminal state.
+   */
+  public getCurrentInputLine(): string {
+    if (!this.terminal) return '';
+
+    try {
+      const buffer = this.terminal.buffer.active;
+      const lineIndex = buffer.baseY + buffer.cursorY;
+      const line = buffer.getLine(lineIndex);
+      if (!line) return '';
+
+      const lineText = line.translateToString(true).replace(/\s+$/g, '');
+      if (!lineText.trim()) return '';
+
+      const promptMatch = lineText.match(/[>$#%➜❯]\s*([^>$#%➜❯│┃|]*)/);
+      if (promptMatch?.[1]) {
+        const input = promptMatch[1]
+          .replace(/[│┃┆┇┊┋|]/g, '')
+          .replace(/\s+$/g, '')
+          .trim();
+        if (input && this.isPlaceholderText(input)) return '';
+        return input;
+      }
+
+      return '';
+    } catch (error) {
+      logger.warn('Failed to get current input line:', error);
+      return '';
+    }
+  }
+
+  private isPlaceholderText(text: string): boolean {
+    const lowerText = text.toLowerCase();
+
+    if (
+      lowerText.startsWith('type your message') ||
+      lowerText.startsWith('type a message') ||
+      lowerText.includes('@path/to/file') ||
+      lowerText.includes('@path to file')
+    ) {
+      return true;
+    }
+
+    if (lowerText.startsWith('try "') || lowerText.startsWith("try '")) {
+      return true;
+    }
+
+    if (
+      lowerText.startsWith('enter your') ||
+      lowerText.startsWith('enter a ') ||
+      lowerText.startsWith('press enter') ||
+      lowerText.startsWith('type here')
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
   render() {
     return html`
       <style>
@@ -506,6 +569,9 @@ export class Terminal extends LitElement {
           height: 100%;
           overflow: hidden;
           font-family: ${TERMINAL_FONT_FAMILY};
+          touch-action: manipulation;
+          -webkit-user-select: text;
+          user-select: text;
         }
         .terminal-paste-input {
           position: absolute;

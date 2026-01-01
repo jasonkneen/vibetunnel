@@ -76,6 +76,8 @@ export class VibeTunnelApp extends LitElement {
   private responsiveObserverInitialized = false;
   private initialRenderComplete = false;
   private sidebarAnimationReady = false;
+  private sidebarScrollElement: HTMLElement | null = null;
+  private sidebarTouchStartY = 0;
   // Session caching to reduce re-renders
   private _cachedSelectedSession: Session | undefined;
   private _cachedSelectedSessionId: string | null = null;
@@ -152,6 +154,16 @@ export class VibeTunnelApp extends LitElement {
         document.body.classList.remove('in-session-view');
       }
     }
+
+    // Re-bind sidebar scroll lock when relevant state changes
+    if (
+      changedProperties.has('currentView') ||
+      changedProperties.has('sidebarCollapsed') ||
+      changedProperties.has('mediaState') ||
+      changedProperties.has('sessions')
+    ) {
+      queueMicrotask(() => this.setupSidebarScrollLock());
+    }
   }
 
   disconnectedCallback() {
@@ -176,6 +188,7 @@ export class VibeTunnelApp extends LitElement {
     }
     // Clean up any active resize listeners
     this.cleanupResizeListeners();
+    this.teardownSidebarScrollLock();
   }
 
   private handleKeyDown = (e: KeyboardEvent) => {
@@ -1559,7 +1572,7 @@ export class VibeTunnelApp extends LitElement {
       return 'w-full min-h-screen flex flex-col';
     }
 
-    const baseClasses = 'bg-secondary flex flex-col';
+    const baseClasses = 'bg-secondary flex flex-col split-view-sidebar';
     const isMobile = this.mediaState.isMobile;
     // Only apply transition class when animations are ready (not during initial load)
     const transitionClass = this.sidebarAnimationReady && !isMobile ? 'sidebar-transition' : '';
@@ -1604,13 +1617,68 @@ export class VibeTunnelApp extends LitElement {
     return this.showSplitView && !this.sidebarCollapsed && !this.mediaState.isMobile;
   }
 
+  /**
+   * Prevent rubber-banding in the sidebar when content is shorter than the viewport.
+   */
+  private setupSidebarScrollLock() {
+    this.teardownSidebarScrollLock();
+
+    if (!this.showSplitView || this.sidebarCollapsed) return;
+
+    const el = this.querySelector('.sidebar-scroll-area') as HTMLElement | null;
+    if (!el) return;
+
+    const hasTouch =
+      'ontouchstart' in window ||
+      navigator.maxTouchPoints > 0 ||
+      'ontouchstart' in document.documentElement;
+    if (!hasTouch) return;
+
+    el.addEventListener('touchstart', this.handleSidebarTouchStart, { passive: true });
+    el.addEventListener('touchmove', this.handleSidebarTouchMove, { passive: false });
+    this.sidebarScrollElement = el;
+  }
+
+  private teardownSidebarScrollLock() {
+    if (!this.sidebarScrollElement) return;
+    this.sidebarScrollElement.removeEventListener('touchstart', this.handleSidebarTouchStart);
+    this.sidebarScrollElement.removeEventListener('touchmove', this.handleSidebarTouchMove);
+    this.sidebarScrollElement = null;
+  }
+
+  private handleSidebarTouchStart = (e: TouchEvent) => {
+    this.sidebarTouchStartY = e.touches[0]?.clientY ?? 0;
+  };
+
+  private handleSidebarTouchMove = (e: TouchEvent) => {
+    const target = this.sidebarScrollElement;
+    if (!target) return;
+
+    const scrollTop = target.scrollTop;
+    const scrollHeight = target.scrollHeight;
+    const clientHeight = target.clientHeight;
+    const deltaY = (e.touches[0]?.clientY ?? 0) - this.sidebarTouchStartY;
+
+    const atTop = scrollTop <= 0;
+    const atBottom = scrollTop + clientHeight >= scrollHeight - 1; // tolerate rounding
+    const scrollingDown = deltaY > 0;
+    const scrollingUp = deltaY < 0;
+    const notScrollable = scrollHeight <= clientHeight + 1;
+
+    if (notScrollable || (atTop && scrollingDown) || (atBottom && scrollingUp)) {
+      // Block rubber-band that would move the parent
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
   private get mainContainerClasses(): string {
     // In split view, we need strict height control and overflow hidden
     // In main view, we need normal document flow for scrolling
     if (this.showSplitView) {
       // Add iOS-specific class to prevent rubber band scrolling
       const iosClass = isIOS() ? 'ios-split-view' : '';
-      return `flex h-screen overflow-hidden relative ${iosClass}`;
+      return `flex overflow-hidden relative split-view-root ${iosClass}`;
     }
     return 'min-h-screen';
   }
@@ -1758,8 +1826,9 @@ export class VibeTunnelApp extends LitElement {
             @logout=${this.handleLogout}
             @navigate-to-list=${this.handleNavigateToList}
             @toggle-sidebar=${this.handleToggleSidebar}
+            style="touch-action: none;"
           ></app-header>
-          <div class="${this.showSplitView ? 'flex-1 overflow-y-auto' : 'flex-1'} bg-secondary">
+          <div class="${this.showSplitView ? 'flex-1 sidebar-scroll-area' : 'flex-1'} bg-secondary">
             <session-list
               .sessions=${this.sessions}
               .loading=${this.loading}

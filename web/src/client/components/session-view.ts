@@ -19,8 +19,10 @@ import type { Session } from '../../shared/types.js';
 import './clickable-path.js';
 import './session-view/session-header.js';
 import './worktree-manager.js';
+import './terminal-chat-view.js';
 import { authClient } from '../services/auth-client.js';
 import { GitService } from '../services/git-service.js';
+import { Z_INDEX } from '../utils/constants.js';
 import { createLogger } from '../utils/logger.js';
 import { TERMINAL_IDS } from '../utils/terminal-constants.js';
 import type { TerminalThemeId } from '../utils/terminal-themes.js';
@@ -97,6 +99,7 @@ export class SessionView extends LitElement {
 
   private instanceId = `session-view-${Math.random().toString(36).substr(2, 9)}`;
   private _updateTerminalTransformTimeout: ReturnType<typeof setTimeout> | null = null;
+  private terminalOutputListeners: Set<(data: string) => void> = new Set();
 
   private createLifecycleEventManagerCallbacks(): LifecycleEventManagerCallbacks {
     return {
@@ -150,16 +153,16 @@ export class SessionView extends LitElement {
       getTerminalLifecycleManager: () =>
         this.terminalLifecycleManager
           ? {
-              resetTerminalSize: () => this.terminalLifecycleManager.resetTerminalSize(),
-              cleanup: () => this.terminalLifecycleManager.cleanup(),
-            }
+            resetTerminalSize: () => this.terminalLifecycleManager.resetTerminalSize(),
+            cleanup: () => this.terminalLifecycleManager.cleanup(),
+          }
           : null,
       getConnectionManager: () =>
         this.connectionManager
           ? {
-              setConnected: (connected: boolean) => this.connectionManager.setConnected(connected),
-              cleanupStreamConnection: () => this.connectionManager.cleanupStreamConnection(),
-            }
+            setConnected: (connected: boolean) => this.connectionManager.setConnected(connected),
+            cleanupStreamConnection: () => this.connectionManager.cleanupStreamConnection(),
+          }
           : null,
       setConnected: (connected: boolean) => {
         this.uiStateManager.setConnected(connected);
@@ -277,6 +280,12 @@ export class SessionView extends LitElement {
     );
     this.connectionManager.setConnected(true);
 
+    // Set up terminal output callback for chat view
+    this.connectionManager.setOnTerminalOutput((data: string) => {
+      // Forward output to chat view via event or state
+      this.handleTerminalOutput(data);
+    });
+
     // Set connected state in UI state manager
     this.uiStateManager.setConnected(true);
 
@@ -337,6 +346,7 @@ export class SessionView extends LitElement {
         this.uiStateManager.clearCtrlSequence();
         this.requestUpdate();
       },
+      getChatMode: () => this.uiStateManager.getState().chatMode,
     };
     this.directKeyboardManager.setCallbacks(directKeyboardCallbacks);
 
@@ -699,6 +709,29 @@ export class SessionView extends LitElement {
     }
   }
 
+  private toggleDirectKeyboard() {
+    this.uiStateManager.toggleDirectKeyboard();
+
+    // If enabling direct keyboard on mobile, ensure hidden input
+    const state = this.uiStateManager.getState();
+    if (state.isMobile && state.useDirectKeyboard) {
+      this.directKeyboardManager.ensureHiddenInputVisible();
+    }
+  }
+
+  private handleToggleChatMode() {
+    const currentChatMode = this.uiStateManager.getState().chatMode;
+    const enteringChatMode = !currentChatMode;
+
+    // If entering chat mode, blur the hidden input to release keyboard capture
+    // This allows the chat input to receive focus and keystrokes
+    if (enteringChatMode) {
+      this.directKeyboardManager.blurHiddenInput();
+    }
+
+    // Toggle the chat mode
+    this.uiStateManager.toggleChatMode();
+  }
   private handleKeyboardButtonClick() {
     // Show quick keys immediately for visual feedback
     this.uiStateManager.setShowQuickKeys(true);
@@ -743,6 +776,21 @@ export class SessionView extends LitElement {
     logger.log('Terminal ready event received');
     // Terminal is ready, ensure it's properly initialized
     this.ensureTerminalInitialized();
+  }
+
+  private handleTerminalOutput(data: string) {
+    // Forward terminal output to all registered listeners (e.g., chat view)
+    for (const listener of this.terminalOutputListeners) {
+      listener(data);
+    }
+  }
+
+  // Allow components to subscribe to terminal output
+  subscribeToTerminalOutput(listener: (data: string) => void): () => void {
+    this.terminalOutputListeners.add(listener);
+    return () => {
+      this.terminalOutputListeners.delete(listener);
+    };
   }
 
   private updateTerminalTransform(): void {
@@ -1071,6 +1119,8 @@ export class SessionView extends LitElement {
             background-color: rgb(var(--color-bg));
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
             overflow: hidden;
+            overscroll-behavior: none;
+            touch-action: none;
             box-sizing: border-box;
           }
           
@@ -1083,14 +1133,25 @@ export class SessionView extends LitElement {
           
           .session-header-area {
             grid-area: header;
+            position: sticky;
+            position: -webkit-sticky;
+            top: 0;
+            z-index: 50;
+            background-color: rgb(var(--color-bg-secondary));
+            transform: translate3d(0, 0, 0);
+            -webkit-transform: translate3d(0, 0, 0);
+            display: block;
           }
           
           .terminal-area {
             grid-area: terminal;
             position: relative;
             overflow: hidden;
+            overflow-x: hidden;
             min-height: 0; /* Critical for grid */
             contain: layout style paint; /* Isolate terminal updates */
+            touch-action: auto;
+            -webkit-overflow-scrolling: touch;
           }
           
           /* Desktop: Keep existing terminal behavior */
@@ -1137,6 +1198,8 @@ export class SessionView extends LitElement {
             width: 100% !important;
             position: relative !important;
             overflow: hidden !important;
+            overscroll-behavior: none !important;
+            touch-action: none !important;
             background-color: rgb(var(--color-bg)) !important;
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
           }
@@ -1146,7 +1209,10 @@ export class SessionView extends LitElement {
             flex-shrink: 0 !important;
             position: sticky !important;
             top: 0 !important;
-            z-index: 10 !important;
+            z-index: 50 !important;
+            background-color: rgb(var(--color-bg-secondary)) !important;
+            transform: translate3d(0, 0, 0) !important;
+            -webkit-transform: translate3d(0, 0, 0) !important;
           }
           
           .terminal-area {
@@ -1154,8 +1220,11 @@ export class SessionView extends LitElement {
             flex: 1 !important;
             min-height: 0 !important;
             overflow: hidden !important;
+            overflow-x: hidden !important;
             position: relative !important;
             contain: layout style paint !important;
+            touch-action: auto !important;
+            -webkit-overflow-scrolling: touch !important;
             /* Remove ALL transforms */
             transform: none !important;
             transition: none !important;
@@ -1241,28 +1310,30 @@ export class SessionView extends LitElement {
             .onTerminateSession=${() => this.sessionActionsHandler.handleTerminateSession()}
             .onClearSession=${() => this.sessionActionsHandler.handleClearSession()}
             .onToggleViewMode=${() => this.sessionActionsHandler.handleToggleViewMode()}
+            .chatMode=${uiState.chatMode}
+            .onToggleChatMode=${() => this.handleToggleChatMode()}
             @close-width-selector=${() => {
-              this.uiStateManager.setShowWidthSelector(false);
-              this.uiStateManager.setCustomWidth('');
-            }}
+        this.uiStateManager.setShowWidthSelector(false);
+        this.uiStateManager.setCustomWidth('');
+      }}
             @session-rename=${async (e: CustomEvent) => {
-              const { sessionId, newName } = e.detail;
-              await this.sessionActionsHandler.handleRename(sessionId, newName);
-            }}
+        const { sessionId, newName } = e.detail;
+        await this.sessionActionsHandler.handleRename(sessionId, newName);
+      }}
             @paste-image=${async () => await this.fileOperationsManager.pasteImage()}
             @select-image=${() => this.fileOperationsManager.selectImage()}
             @open-camera=${() => this.fileOperationsManager.openCamera()}
             @show-image-upload-options=${() => this.fileOperationsManager.selectImage()}
             @toggle-view-mode=${() => this.sessionActionsHandler.handleToggleViewMode()}
             @capture-toggled=${(e: CustomEvent) => {
-              this.dispatchEvent(
-                new CustomEvent('capture-toggled', {
-                  detail: e.detail,
-                  bubbles: true,
-                  composed: true,
-                })
-              );
-            }}
+        this.dispatchEvent(
+          new CustomEvent('capture-toggled', {
+            detail: e.detail,
+            bubbles: true,
+            composed: true,
+          })
+        );
+      }}
             .hasGitRepo=${!!this.session?.gitRepoPath}
             .viewMode=${uiState.viewMode}
           >
@@ -1271,19 +1342,17 @@ export class SessionView extends LitElement {
 
         <!-- Content Area (Terminal or Worktree) -->
         <div
-          class="terminal-area bg-bg ${
-            this.session?.status === 'exited' && uiState.viewMode === 'terminal'
-              ? 'session-exited opacity-90'
-              : ''
-          } ${
-            // Add safe area padding for landscape mode on mobile to handle notch
-            uiState.isMobile && uiState.isLandscape ? 'safe-area-left safe-area-right' : ''
-          }"
+          class="terminal-area bg-bg ${this.session?.status === 'exited' && uiState.viewMode === 'terminal'
+        ? 'session-exited opacity-90'
+        : ''
+      } ${
+      // Add safe area padding for landscape mode on mobile to handle notch
+      uiState.isMobile && uiState.isLandscape ? 'safe-area-left safe-area-right' : ''
+      }"
           data-quickkeys-visible="${uiState.showQuickKeys}"
         >
-          ${
-            this.loadingAnimationManager.isLoading()
-              ? html`
+          ${this.loadingAnimationManager.isLoading()
+        ? html`
                 <!-- Enhanced Loading overlay -->
                 <div
                   class="absolute inset-0 bg-bg/90 backdrop-filter backdrop-blur-sm flex items-center justify-center z-10 animate-fade-in"
@@ -1294,37 +1363,52 @@ export class SessionView extends LitElement {
                   </div>
                 </div>
               `
-              : ''
-          }
-          ${
-            uiState.viewMode === 'worktree' && this.session?.gitRepoPath
-              ? html`
+        : ''
+      }
+          ${uiState.viewMode === 'worktree' && this.session?.gitRepoPath
+        ? html`
               <worktree-manager
                 .gitService=${this.gitService}
                 .repoPath=${this.session.gitRepoPath}
                 @back=${() => {
-                  this.uiStateManager.setViewMode('terminal');
-                }}
+            this.uiStateManager.setViewMode('terminal');
+          }}
               ></worktree-manager>
             `
-              : uiState.viewMode === 'terminal'
-                ? html`
+        : uiState.viewMode === 'terminal'
+          ? html`
               <!-- Enhanced Terminal Component -->
-              <terminal-renderer
-                id="${TERMINAL_IDS.SESSION_TERMINAL}"
-                .session=${this.session}
-                .terminalFontSize=${uiState.terminalFontSize}
-                .terminalMaxCols=${uiState.terminalMaxCols}
-                .terminalTheme=${uiState.terminalTheme}
-                .disableClick=${uiState.isMobile}
-                .hideScrollButton=${uiState.showQuickKeys}
-                .isMobile=${uiState.isMobile}
-                .showQuickKeys=${uiState.showQuickKeys}
-                .onTerminalClick=${this.boundHandleTerminalClick}
-                .onTerminalInput=${this.boundHandleTerminalInput}
-                .onTerminalResize=${this.boundHandleTerminalResize}
-                .onTerminalReady=${this.boundHandleTerminalReady}
-              ></terminal-renderer>
+              <div style="position: relative; height: 100%;">
+                <!-- Terminal (hidden when chat mode is active) -->
+                <terminal-renderer
+                  style="${uiState.chatMode ? 'display: none;' : ''}"
+                  id="${TERMINAL_IDS.SESSION_TERMINAL}"
+                  .session=${this.session}
+                  .terminalFontSize=${uiState.terminalFontSize}
+                  .terminalMaxCols=${uiState.terminalMaxCols}
+                  .terminalTheme=${uiState.terminalTheme}
+                  .disableClick=${uiState.isMobile && uiState.useDirectKeyboard}
+                  .hideScrollButton=${uiState.showQuickKeys}
+                  .isMobile=${uiState.isMobile}
+                  .showQuickKeys=${uiState.showQuickKeys}
+                  .onTerminalClick=${this.boundHandleTerminalClick}
+                  .onTerminalInput=${this.boundHandleTerminalInput}
+                  .onTerminalResize=${this.boundHandleTerminalResize}
+                  .onTerminalReady=${this.boundHandleTerminalReady}
+                ></terminal-renderer>
+                
+                <!-- Chat view overlay (always rendered but hidden to preserve history) -->
+                <terminal-chat-view
+                  style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; ${uiState.chatMode ? '' : 'display: none; pointer-events: none;'}"
+                  .active=${uiState.chatMode}
+                  .sessionId=${this.session?.id ?? ''}
+                  .pendingInput=${this.inputManager?.getPendingInput() ?? ''}
+                  .onSend=${(data: string) => this.inputManager?.sendInputText(data)}
+                  .onPendingInputChange=${(input: string) => this.inputManager?.setPendingInput(input)}
+                  .subscribeToOutput=${(listener: (data: string) => void) => this.subscribeToTerminalOutput(listener)}
+                  .getTerminalInputLine=${() => this.terminalLifecycleManager.getTerminal()?.getCurrentInputLine() ?? ''}
+                ></terminal-chat-view>
+              </div>
             `
                 : ''
           }
@@ -1403,44 +1487,136 @@ export class SessionView extends LitElement {
               onClearCtrlSequence: () => this.handleClearCtrlSequence(),
               onCtrlAlphaCancel: () => this.handleCtrlAlphaCancel(),
 
-              // Quick keys
-              onQuickKeyPress: (key: string) => this.directKeyboardManager.handleQuickKeyPress(key),
+        // Quick keys
+        onQuickKeyPress: (key: string) => this.directKeyboardManager.handleQuickKeyPress(key),
 
-              // File browser/picker
-              onCloseFileBrowser: () => this.fileOperationsManager.closeFileBrowser(),
-              onInsertPath: async (e: CustomEvent) => {
-                const { path, type } = e.detail;
-                await this.fileOperationsManager.insertPath(path, type);
-              },
-              onFileSelected: async (e: CustomEvent) => {
-                await this.fileOperationsManager.handleFileSelected(e.detail.path);
-              },
-              onFileError: (e: CustomEvent) => {
-                this.fileOperationsManager.handleFileError(e.detail);
-              },
-              onCloseFilePicker: () => this.fileOperationsManager.closeFilePicker(),
+        // File browser/picker
+        onCloseFileBrowser: () => this.fileOperationsManager.closeFileBrowser(),
+        onInsertPath: async (e: CustomEvent) => {
+          const { path, type } = e.detail;
+          await this.fileOperationsManager.insertPath(path, type);
+        },
+        onFileSelected: async (e: CustomEvent) => {
+          await this.fileOperationsManager.handleFileSelected(e.detail.path);
+        },
+        onFileError: (e: CustomEvent) => {
+          this.fileOperationsManager.handleFileError(e.detail);
+        },
+        onCloseFilePicker: () => this.fileOperationsManager.closeFilePicker(),
 
-              // Terminal settings
-              onWidthSelect: (width: number) =>
-                this.terminalSettingsManager.handleWidthSelect(width),
-              onFontSizeChange: (size: number) =>
-                this.terminalSettingsManager.handleFontSizeChange(size),
-              onThemeChange: (theme: TerminalThemeId) =>
-                this.terminalSettingsManager.handleThemeChange(theme),
-              onCloseWidthSelector: () => {
-                this.uiStateManager.setShowWidthSelector(false);
-                this.uiStateManager.setCustomWidth('');
-              },
+        // Terminal settings
+        onWidthSelect: (width: number) =>
+          this.terminalSettingsManager.handleWidthSelect(width),
+        onFontSizeChange: (size: number) =>
+          this.terminalSettingsManager.handleFontSizeChange(size),
+        onThemeChange: (theme: TerminalThemeId) =>
+          this.terminalSettingsManager.handleThemeChange(theme),
+        onCloseWidthSelector: () => {
+          this.uiStateManager.setShowWidthSelector(false);
+          this.uiStateManager.setCustomWidth('');
+        },
 
-              // Keyboard button
-              onKeyboardButtonClick: () => this.handleKeyboardButtonClick(),
+        // Keyboard button
+        onKeyboardButtonClick: () => this.handleKeyboardButtonClick(),
 
-              // Navigation
-              handleBack: () => this.handleBack(),
-            }}
+        // Navigation
+        handleBack: () => this.handleBack(),
+      }}
           ></overlays-container>
         </div>
       </div>
+
+      <!-- Quick Keys - Outside grid for proper position:fixed behavior -->
+      <!-- Terminal Quick Keys (for direct keyboard mode, hidden in chat mode) -->
+      <terminal-quick-keys
+        style="position: fixed !important; bottom: 0 !important; left: 0 !important; right: 0 !important; z-index: ${Z_INDEX.TERMINAL_QUICK_KEYS} !important;"
+        .visible=${uiState.isMobile && uiState.useDirectKeyboard && uiState.showQuickKeys && !uiState.chatMode}
+        .onKeyPress=${(key: string) => this.directKeyboardManager.handleQuickKeyPress(key)}
+      ></terminal-quick-keys>
+
+      <!-- Mobile Input Controls (only show when direct keyboard is disabled) -->
+      ${uiState.isMobile && !uiState.showMobileInput && !uiState.useDirectKeyboard
+        ? html`
+            <div class="p-4 bg-bg-secondary" style="position: fixed; bottom: 0; left: 0; right: 0; z-index: ${Z_INDEX.TERMINAL_QUICK_KEYS};">
+            <!-- First row: Arrow keys -->
+            <div class="flex gap-2 mb-2">
+              <button
+                class="flex-1 font-mono px-3 py-2 text-sm transition-all cursor-pointer quick-start-btn"
+                @click=${() => this.handleSpecialKey('arrow_up')}
+              >
+                <span class="text-xl">↑</span>
+              </button>
+              <button
+                class="flex-1 font-mono px-3 py-2 text-sm transition-all cursor-pointer quick-start-btn"
+                @click=${() => this.handleSpecialKey('arrow_down')}
+              >
+                <span class="text-xl">↓</span>
+              </button>
+              <button
+                class="flex-1 font-mono px-3 py-2 text-sm transition-all cursor-pointer quick-start-btn"
+                @click=${() => this.handleSpecialKey('arrow_left')}
+              >
+                <span class="text-xl">←</span>
+              </button>
+              <button
+                class="flex-1 font-mono px-3 py-2 text-sm transition-all cursor-pointer quick-start-btn"
+                @click=${() => this.handleSpecialKey('arrow_right')}
+              >
+                <span class="text-xl">→</span>
+              </button>
+            </div>
+
+            <!-- Second row: Special keys -->
+            <div class="flex gap-2">
+              <button
+                class="font-mono text-sm transition-all cursor-pointer w-16 quick-start-btn"
+                @click=${() => this.handleSpecialKey('escape')}
+              >
+                ESC
+              </button>
+              <button
+                class="font-mono text-sm transition-all cursor-pointer w-16 quick-start-btn"
+                @click=${() => this.handleSpecialKey('\t')}
+              >
+                <span class="text-xl">⇥</span>
+              </button>
+              <button
+                class="flex-1 font-mono px-3 py-2 text-sm transition-all cursor-pointer quick-start-btn"
+                @click=${this.handleMobileInputToggle}
+              >
+                ABC123
+              </button>
+              <button
+                class="font-mono text-sm transition-all cursor-pointer w-16 quick-start-btn"
+                @click=${() => this.fileOperationsManager.openFilePicker()}
+                title="Upload file"
+              >
+                📷
+              </button>
+              <button
+                class="font-mono text-sm transition-all cursor-pointer w-16 quick-start-btn"
+                @click=${this.toggleDirectKeyboard}
+                title="Switch to direct keyboard mode"
+              >
+                ⌨️
+              </button>
+              <button
+                class="font-mono text-sm transition-all cursor-pointer w-16 quick-start-btn"
+                @click=${() => this.uiStateManager.toggleCtrlAlpha()}
+              >
+                CTRL
+              </button>
+              <button
+                class="font-mono text-sm transition-all cursor-pointer w-16 quick-start-btn"
+                @click=${() => this.handleSpecialKey('enter')}
+              >
+                <span class="text-xl">⏎</span>
+              </button>
+              </div>
+            </div>
+          `
+        : ''
+      }
       </div>
     `;
   }

@@ -20,11 +20,16 @@ export class ConnectionManager {
   private stdoutDecoder = new TextDecoder();
   private outputBuffer = '';
   private batchTimeout: number | null = null;
+  private onTerminalOutput: ((data: string) => void) | null = null;
 
   constructor(
     private onSessionExit: (sessionId: string) => void,
     private onSessionUpdate: (session: Session) => void
   ) {}
+
+  setOnTerminalOutput(callback: ((data: string) => void) | null): void {
+    this.onTerminalOutput = callback;
+  }
 
   setTerminal(terminal: Terminal | null): void {
     this.terminal = terminal;
@@ -74,7 +79,11 @@ export class ConnectionManager {
       stdout: true,
       events: true,
       onStdout: (bytes) => {
-        enqueue(this.stdoutDecoder.decode(bytes, { stream: true }));
+        const chunk = this.stdoutDecoder.decode(bytes, { stream: true });
+        if (this.onTerminalOutput) {
+          this.onTerminalOutput(chunk);
+        }
+        enqueue(chunk);
       },
       onEvent: (event) => {
         if (!this.session) return;

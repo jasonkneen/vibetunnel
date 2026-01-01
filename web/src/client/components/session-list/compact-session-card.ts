@@ -14,6 +14,7 @@ import { customElement, property } from 'lit/decorators.js';
 import type { Session } from '../../../shared/types.js';
 import { formatSessionDuration } from '../../../shared/utils/time.js';
 import type { AuthClient } from '../../services/auth-client.js';
+import { sessionActionService } from '../../services/session-action-service.js';
 import { formatPathForDisplay } from '../../utils/path-utils.js';
 import '../inline-edit.js';
 
@@ -53,14 +54,34 @@ export class CompactSessionCard extends LitElement {
   private async handleDelete(e: Event) {
     e.stopPropagation();
 
-    const eventType = this.session.status === 'exited' ? 'session-cleanup' : 'session-delete';
-    this.dispatchEvent(
-      new CustomEvent(eventType, {
-        detail: { sessionId: this.session.id },
-        bubbles: true,
-        composed: true,
-      })
-    );
+    // Use sessionActionService to perform the actual kill/cleanup
+    await sessionActionService.deleteSession(this.session, {
+      authClient: this.authClient,
+      callbacks: {
+        onSuccess: () => {
+          // Only dispatch the event after successful server-side deletion
+          const eventType = this.session.status === 'exited' ? 'session-cleanup' : 'session-delete';
+          this.dispatchEvent(
+            new CustomEvent(eventType, {
+              detail: { sessionId: this.session.id },
+              bubbles: true,
+              composed: true,
+            })
+          );
+        },
+        onError: (error: string) => {
+          console.error('Failed to delete session:', error);
+          // Dispatch error event
+          this.dispatchEvent(
+            new CustomEvent('session-kill-error', {
+              detail: { sessionId: this.session.id, error },
+              bubbles: true,
+              composed: true,
+            })
+          );
+        },
+      },
+    });
   }
 
   private renderStatusIndicator() {

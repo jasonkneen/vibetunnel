@@ -219,11 +219,20 @@
 @layer base {
   html {
     @apply bg-bg text-text;
+    height: 100%;
+    height: var(--app-height, 100%);
+    overflow: hidden;
+    overscroll-behavior: none;
   }
   
   body {
     @apply bg-bg text-text;
     transition: background-color 0.3s ease, color 0.3s ease;
+    height: 100%;
+    height: var(--app-height, 100%);
+    overflow: hidden;
+    /* Removed position:fixed as it can interfere with position:fixed children */
+    width: 100%;
   }
   
   /* Checkbox styling */
@@ -855,27 +864,52 @@
 }
 
 /* Mobile scroll and touch behavior fixes */
-html,
+:root {
+  /* Default to 100dvh, will be overridden by JS for iOS Safari */
+  --app-height: 100dvh;
+}
+
+html {
+  overscroll-behavior: none;
+  /* Prevent html from scrolling/bouncing on iOS */
+  overflow: hidden;
+  width: 100%;
+  /* Use CSS custom property updated by visualViewport API */
+  height: var(--app-height);
+  min-height: var(--app-height);
+  /* Prevent any margin/padding that could cause gaps */
+  margin: 0;
+  padding: 0;
+}
+
 body {
   overscroll-behavior: none;
-  touch-action: pan-x pan-y;
-  -webkit-overflow-scrolling: touch;
+  /* Use auto instead of touch to prevent rubber band scrolling */
+  -webkit-overflow-scrolling: auto;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  /* NO position:fixed here - it breaks position:fixed children */
+  margin: 0;
+  padding: 0;
 }
 
 /* Grid layout touch optimization for session view */
 .session-view-grid {
-  contain: layout style;
-  will-change: contents;
+  /* Removed contain and will-change to allow position:fixed children to work correctly */
 }
 
 .terminal-area {
-  contain: strict;
+  /* Removed contain:strict as it breaks position:fixed for quick keys */
   isolation: isolate;
   touch-action: pan-y;
+  /* Ensure terminal area can be scrolled independently */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .overlay-container {
-  contain: layout style;
+  /* Removed contain to allow position:fixed children */
   isolation: isolate;
 }
 
@@ -888,8 +922,17 @@ body {
 
 /* Prevent pull-to-refresh on mobile */
 body {
-  overscroll-behavior-y: contain;
+  /* Changed from contain to none to prevent black gap on iOS */
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
 }
+
+/* Set body and html background to match quick keys when keyboard is visible */
+html[data-keyboard-visible="true"],
+body[data-keyboard-visible="true"] {
+  background-color: rgb(var(--color-bg-secondary));
+}
+
 
 /* iOS Safari specific fixes for split view */
 @supports (-webkit-touch-callout: none) {
@@ -915,10 +958,43 @@ body {
   }
 }
 
+/* Terminal-specific touch handling */
+.xterm {
+  touch-action: pan-y;
+  overscroll-behavior: none;
+}
+
+.xterm .xterm-viewport {
+  touch-action: pan-y;
+  /* Prevent overscroll bounce that creates black gap below quick keys */
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
+}
+
+/* Fix XTerm text span touch scrolling issues */
+.xterm .xterm-rows span {
+  touch-action: pan-y;
+}
+
+.xterm .xterm-screen {
+  touch-action: pan-y;
+}
+
+/* More aggressive fix for session cards (read-only snapshots) */
+.session-preview .xterm .xterm-rows span {
+  pointer-events: none;
+  touch-action: pan-y;
+}
 /* Terminal container scroll prevention */
 #terminal-container {
   touch-action: pan-y;
   overscroll-behavior: none;
+}
+
+/* Disable scroll while selecting text on mobile */
+.terminal-scroll-container.selecting-text {
+  touch-action: none;
+  overflow: hidden;
 }
 
 /* Session cards - prevent pull-to-refresh */
@@ -1653,7 +1729,9 @@ body.initial-session-load .session-flex-responsive > session-card:nth-child(n + 
 
 /* Position keyboard button */
 .keyboard-button {
-  @apply fixed z-50;
+  @apply fixed;
+  /* Higher z-index than quick keys (48) to appear above them */
+  z-index: 60;
   /* Default positioning - bottom right */
   bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
   right: calc(0.75rem + env(safe-area-inset-right, 0px));
@@ -1663,6 +1741,8 @@ body.initial-session-load .session-flex-responsive > session-card:nth-child(n + 
   /* Prevent touch delays */
   -webkit-touch-callout: none;
   user-select: none;
+  /* Smooth transition when quick keys appear */
+  transition: bottom 0.2s ease-in-out;
   
   /* Mobile-specific enhancements */
   min-width: 48px; /* Ensure minimum touch target size */
@@ -1770,6 +1850,12 @@ body.initial-session-load .session-flex-responsive > session-card:nth-child(n + 
 .tap-to-focus-overlay.keyboard-active {
   opacity: 0;
   pointer-events: none;
+}
+
+/* Move keyboard button up when quick keys are visible */
+.keyboard-button.quick-keys-visible {
+  /* Move above quick keys - approximately 100px for 3 rows of buttons */
+  bottom: calc(100px + 0.75rem + env(safe-area-inset-bottom, 0px));
 }
 
 /* Hover state for both buttons */
@@ -2041,11 +2127,36 @@ body.initial-session-load .session-flex-responsive > session-card:nth-child(n + 
   }
 }
 
-/* Ensure proper scrolling in split view */
+/* Ensure proper scrolling in split view - only scroll when needed */
 .split-view-sidebar {
-  height: 100vh;
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
+  min-height: 0;
+  overflow: hidden; /* Strictly prevent container scroll - same as session-view-grid */
+  overscroll-behavior: none; /* Prevent iOS rubber-band scroll */
+  touch-action: none; /* Disable browser handling of gestures on sidebar container */
+  -webkit-overflow-scrolling: auto;
+}
+
+.split-view-root {
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none; /* Only children opt-in to pan */
+  -webkit-overflow-scrolling: auto;
+}
+
+.split-view-sidebar .sidebar-scroll-area {
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain; /* Confine scroll bounce to the list */
+  touch-action: pan-y; /* Allow vertical scrolling only */
+  contain: layout style paint;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Responsive breakpoints for split view */
@@ -2394,4 +2505,4 @@ body.initial-session-load .session-flex-responsive > session-card:nth-child(n + 
   .mobile-action-key {
     @apply py-1.5 text-xs;
   }
-  }
+}
